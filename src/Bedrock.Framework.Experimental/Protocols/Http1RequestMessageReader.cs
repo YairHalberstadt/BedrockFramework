@@ -1,14 +1,17 @@
-﻿using System;
+﻿using Bedrock.Framework.Protocols.Http.Http1;
+using System;
 using System.Buffers;
+using System.Diagnostics;
 using System.Net.Http;
 using System.Text;
 
 namespace Bedrock.Framework.Protocols
 {
-    public class Http1RequestMessageReader : IMessageReader<HttpRequestMessage>
+    public class Http1RequestMessageReader : IMessageReader<ParseResult<HttpRequestMessage>>
     {
+        // Question: Do we want to inject this? Make it a singleton? What is the philosophy of this library WRT dependency injection?
+        private static Http1HeaderReader _headerReader = new Http1HeaderReader();
         private ReadOnlySpan<byte> NewLine => new byte[] { (byte)'\r', (byte)'\n' };
-        private ReadOnlySpan<byte> TrimChars => new byte[] { (byte)' ', (byte)'\t' };
 
         private HttpRequestMessage _httpRequestMessage = new HttpRequestMessage();
 
@@ -19,10 +22,10 @@ namespace Bedrock.Framework.Protocols
             _httpRequestMessage.Content = content;
         }
 
-        public bool TryParseMessage(in ReadOnlySequence<byte> input, ref SequencePosition consumed, ref SequencePosition examined, out HttpRequestMessage message)
+        public bool TryParseMessage(in ReadOnlySequence<byte> input, ref SequencePosition consumed, ref SequencePosition examined, out ParseResult<HttpRequestMessage> message)
         {
             var sequenceReader = new SequenceReader<byte>(input);
-            message = null;
+            message = default;
 
             if (_state == State.StartLine)
             {
@@ -53,54 +56,45 @@ namespace Bedrock.Framework.Protocols
             }
             else if (_state == State.Headers)
             {
-                while (sequenceReader.TryReadTo(out var headerLine, NewLine))
+                while (true)
                 {
-                    if (headerLine.Length == 0)
+                    var remaining = input.Slice(consumed);
+                    sequenceReader = new SequenceReader<byte>(remaining);
+
+                    if (sequenceReader.IsNext(NewLine, advancePast: true))
                     {
+                        _state = State.Body;
                         consumed = sequenceReader.Position;
                         examined = consumed;
-
-                        message = _httpRequestMessage;
-
-                        // End of headers
-                        _state = State.Body;
+                        message = new ParseResult<HttpRequestMessage>(_httpRequestMessage);
                         break;
                     }
 
-                    // Parse the header
-                    ParseHeader(headerLine, out var headerName, out var headerValue);
+                    if (!_headerReader.TryParseMessage(remaining, ref consumed, ref examined, out var headerResult))
+                    {
+                        return false;
+                    }
 
-                    var key = Encoding.ASCII.GetString(headerName.Trim(TrimChars));
-                    var value = Encoding.ASCII.GetString(headerValue.Trim(TrimChars));
+                    if (headerResult.TryGetError(out var error))
+                    {
+                        message = new ParseResult<HttpRequestMessage>(error);
+                        return true;
+                    }
+
+                    var success = headerResult.TryGetValue(out var header);
+                    Debug.Assert(success == true);
+
+                    var key = Encoding.ASCII.GetString(header.Name);
+                    var value = Encoding.ASCII.GetString(header.Value);
 
                     if (!_httpRequestMessage.Headers.TryAddWithoutValidation(key, value))
                     {
                         _httpRequestMessage.Content.Headers.TryAddWithoutValidation(key, value);
                     }
-
-                    consumed = sequenceReader.Position;
                 }
             }
 
             return _state == State.Body;
-        }
-
-        internal static void ParseHeader(in ReadOnlySequence<byte> headerLine, out ReadOnlySpan<byte> headerName, out ReadOnlySpan<byte> headerValue)
-        {
-            if (headerLine.IsSingleSegment)
-            {
-                var span = headerLine.FirstSpan;
-                var colon = span.IndexOf((byte)':');
-                headerName = span.Slice(0, colon);
-                headerValue = span.Slice(colon + 1);
-            }
-            else
-            {
-                var headerReader = new SequenceReader<byte>(headerLine);
-                headerReader.TryReadTo(out headerName, (byte)':');
-                var remaining = headerReader.Sequence.Slice(headerReader.Position);
-                headerValue = remaining.IsSingleSegment ? remaining.FirstSpan : remaining.ToArray();
-            }
         }
 
         private enum State

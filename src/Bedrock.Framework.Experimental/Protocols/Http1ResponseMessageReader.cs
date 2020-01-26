@@ -1,17 +1,20 @@
-﻿using System;
+﻿using Bedrock.Framework.Protocols.Http.Http1;
+using System;
 using System.Buffers;
 using System.Buffers.Text;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Net;
 using System.Net.Http;
 using System.Text;
 
 namespace Bedrock.Framework.Protocols
 {
-    public class Http1ResponseMessageReader : IMessageReader<HttpResponseMessage>
+    public class Http1ResponseMessageReader : IMessageReader<ParseResult<HttpResponseMessage>>
     {
+        // Question: Do we want to inject this? Make it a singleton? What is the philosophy of this library WRT dependency injection?
+        private static Http1HeaderReader _headerReader = new Http1HeaderReader();
         private ReadOnlySpan<byte> NewLine => new byte[] { (byte)'\r', (byte)'\n' };
-        private ReadOnlySpan<byte> TrimChars => new byte[] { (byte)' ', (byte)'\t' };
 
         private HttpResponseMessage _httpResponseMessage = new HttpResponseMessage();
 
@@ -22,10 +25,10 @@ namespace Bedrock.Framework.Protocols
             _httpResponseMessage.Content = content;
         }
 
-        public bool TryParseMessage(in ReadOnlySequence<byte> input, ref SequencePosition consumed, ref SequencePosition examined, out HttpResponseMessage message)
+        public bool TryParseMessage(in ReadOnlySequence<byte> input, ref SequencePosition consumed, ref SequencePosition examined, out ParseResult<HttpResponseMessage> message)
         {
             var sequenceReader = new SequenceReader<byte>(input);
-            message = null;
+            message = default;
 
             switch (_state)
             {
@@ -60,35 +63,44 @@ namespace Bedrock.Framework.Protocols
                     goto case State.Headers;
 
                 case State.Headers:
-                    while (sequenceReader.TryReadTo(out var headerLine, NewLine))
+                    while (true)
                     {
-                        if (headerLine.Length == 0)
+                        var remaining = input.Slice(consumed);
+                        sequenceReader = new SequenceReader<byte>(remaining);
+
+                        if (sequenceReader.IsNext(NewLine, advancePast: true))
                         {
                             consumed = sequenceReader.Position;
                             examined = consumed;
-
-                            message = _httpResponseMessage;
-
-                            // End of headers
+                            message = new ParseResult<HttpResponseMessage>(_httpResponseMessage);
                             _state = State.Body;
                             break;
                         }
 
-                        // Parse the header
-                        Http1RequestMessageReader.ParseHeader(headerLine, out var headerName, out var headerValue);
+                        if (!_headerReader.TryParseMessage(remaining, ref consumed, ref examined, out var headerResult))
+                        {
+                            return false;
+                        }
 
-                        var key = Encoding.ASCII.GetString(headerName.Trim(TrimChars));
-                        var value = Encoding.ASCII.GetString(headerValue.Trim(TrimChars));
+                        if (headerResult.TryGetError(out var error))
+                        {
+                            examined = sequenceReader.Position;
+                            message = new ParseResult<HttpResponseMessage>(error);
+                            return true;
+                        }
+
+                        var success = headerResult.TryGetValue(out var header);
+                        Debug.Assert(success == true);
+
+                        var key = Encoding.ASCII.GetString(header.Name);
+                        var value = Encoding.ASCII.GetString(header.Value);
 
                         if (!_httpResponseMessage.Headers.TryAddWithoutValidation(key, value))
                         {
                             _httpResponseMessage.Content.Headers.TryAddWithoutValidation(key, value);
                         }
-
-                        consumed = sequenceReader.Position;
                     }
 
-                    examined = sequenceReader.Position;
                     break;
                 default:
                     break;

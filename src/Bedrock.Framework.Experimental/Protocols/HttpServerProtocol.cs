@@ -1,4 +1,5 @@
-﻿using System.Net.Http;
+﻿using System.IO;
+using System.Net.Http;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Connections;
 
@@ -29,25 +30,33 @@ namespace Bedrock.Framework.Protocols
                 throw new ConnectionAbortedException();
             }
 
-            var request = result.Message;
+            var parseResult = result.Message;
 
-            // TODO: Handle upgrade
-            if (content.Headers.ContentLength != null)
+            if (parseResult.TryGetValue(out var request))
             {
-                content.SetStream(new HttpBodyStream(_reader, new ContentLengthHttpBodyReader(request.Content.Headers.ContentLength.Value)));
-            }
-            else if (request.Headers.TransferEncodingChunked.HasValue)
-            {
-                content.SetStream(new HttpBodyStream(_reader, new ChunkedHttpBodyReader()));
+                // TODO: Handle upgrade
+                if (content.Headers.ContentLength != null)
+                {
+                    content.SetStream(new HttpBodyStream(_reader, new ContentLengthHttpBodyReader(request.Content.Headers.ContentLength.Value)));
+                }
+                else if (request.Headers.TransferEncodingChunked.HasValue)
+                {
+                    content.SetStream(new HttpBodyStream(_reader, new ChunkedHttpBodyReader()));
+                }
+                else
+                {
+                    content.SetStream(new HttpBodyStream(_reader, new ContentLengthHttpBodyReader(0)));
+                }
+
+                _reader.Advance();
+
+                return request;
             }
             else
             {
-                content.SetStream(new HttpBodyStream(_reader, new ContentLengthHttpBodyReader(0)));
+                parseResult.TryGetError(out var error);
+                throw new IOException($"Invalid Http Request. Reason: {error.Reason}, Line: {error.Line}");
             }
-
-            _reader.Advance();
-
-            return request;
         }
 
         public async ValueTask WriteResponseAsync(HttpResponseMessage responseMessage)

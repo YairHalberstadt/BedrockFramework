@@ -1,4 +1,5 @@
 ﻿using System;
+using System.IO;
 using System.Net;
 using System.Net.Http;
 using System.Threading.Tasks;
@@ -49,25 +50,33 @@ namespace Bedrock.Framework.Protocols
                 throw new ConnectionAbortedException();
             }
 
-            var response = result.Message;
+            var parseResult = result.Message;
 
-            // TODO: Handle upgrade
-            if (content.Headers.ContentLength != null)
+            if (parseResult.TryGetValue(out var response))
             {
-                content.SetStream(new HttpBodyStream(_reader, new ContentLengthHttpBodyReader(response.Content.Headers.ContentLength.Value)));
-            }
-            else if (response.Headers.TransferEncodingChunked.HasValue)
-            {
-                content.SetStream(new HttpBodyStream(_reader, new ChunkedHttpBodyReader()));
+                // TODO: Handle upgrade
+                if (content.Headers.ContentLength != null)
+                {
+                    content.SetStream(new HttpBodyStream(_reader, new ContentLengthHttpBodyReader(response.Content.Headers.ContentLength.Value)));
+                }
+                else if (response.Headers.TransferEncodingChunked.HasValue)
+                {
+                    content.SetStream(new HttpBodyStream(_reader, new ChunkedHttpBodyReader()));
+                }
+                else
+                {
+                    content.SetStream(new HttpBodyStream(_reader, new ContentLengthHttpBodyReader(0)));
+                }
+
+                _reader.Advance();
+
+                return response;
             }
             else
             {
-                content.SetStream(new HttpBodyStream(_reader, new ContentLengthHttpBodyReader(0)));
+                parseResult.TryGetError(out var error);
+                throw new IOException($"Invalid Http Response. Reason: {error.Reason}, Line: {error.Line}");
             }
-
-            _reader.Advance();
-
-            return response;
         }
     }
 }
