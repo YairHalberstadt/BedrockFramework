@@ -1,4 +1,5 @@
-﻿using Bedrock.Framework.Protocols.Http.Http1;
+﻿using Bedrock.Framework.Infrastructure;
+using Bedrock.Framework.Protocols.Http.Http1;
 using System;
 using System.Buffers;
 using System.Diagnostics;
@@ -24,11 +25,11 @@ namespace Bedrock.Framework.Protocols
 
         public bool TryParseMessage(in ReadOnlySequence<byte> input, ref SequencePosition consumed, ref SequencePosition examined, out ParseResult<HttpRequestMessage> message)
         {
-            var sequenceReader = new SequenceReader<byte>(input);
             message = default;
 
             if (_state == State.StartLine)
             {
+                var sequenceReader = new SequenceReader<byte>(input);
                 if (!sequenceReader.TryReadTo(out ReadOnlySpan<byte> method, (byte)' '))
                 {
                     return false;
@@ -59,12 +60,10 @@ namespace Bedrock.Framework.Protocols
                 while (true)
                 {
                     var remaining = input.Slice(consumed);
-                    sequenceReader = new SequenceReader<byte>(remaining);
-
-                    if (sequenceReader.IsNext(NewLine, advancePast: true))
+                    if (remaining.StartsWith(NewLine))
                     {
                         _state = State.Body;
-                        consumed = sequenceReader.Position;
+                        consumed = remaining.GetPosition(2);
                         examined = consumed;
                         message = new ParseResult<HttpRequestMessage>(_httpRequestMessage);
                         break;

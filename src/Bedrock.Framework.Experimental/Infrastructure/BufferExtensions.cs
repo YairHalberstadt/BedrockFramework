@@ -42,6 +42,35 @@ namespace Bedrock.Framework.Infrastructure
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        internal static bool StartsWith(in this ReadOnlySequence<byte> sequence, ReadOnlySpan<byte> bytes)
+        {
+            if (sequence.Length < bytes.Length)
+            {
+                return false;
+            }
+
+            foreach (var segment in sequence)
+            {
+                if (bytes.Length <= segment.Length)
+                {
+                    return bytes.SequenceEqual(segment.Span[..bytes.Length]);
+                }
+                else if (!bytes[..segment.Length].SequenceEqual(segment.Span))
+                {
+                    return false;
+                }
+                bytes = bytes[segment.Length..];
+            }
+            ThrowUnreachable();
+            return false;
+
+            void ThrowUnreachable()
+            {
+                throw new InvalidOperationException("This location is thought to be unreachable");
+            }
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         internal static unsafe void WriteNumeric<T>(ref this BufferWriter<T> buffer, uint number)
              where T : struct, IBufferWriter<byte>
         {
